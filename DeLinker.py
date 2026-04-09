@@ -1036,13 +1036,14 @@ class DenseGGNNChemModel(ChemModel):
         best_mol = select_best(all_mol)
         # Nothing generated
         if best_mol is None:
-            return
+            return None
         # Record generated molecule
         generated_all_smiles.append(elements['smiles_in'] + " " + elements['smiles_out'] + " " + Chem.MolToSmiles(best_mol))
         dump('%s_generated_smiles_%s' % (self.run_id, self.params['dataset']), generated_all_smiles)
         # Progress
         if count % 100 == 0:
             print("Generated mol %d" % (count))
+        return best_mol
 
     def compensate_node_length(self, elements, bucket_size):
         maximum_length = bucket_size+self.params["compensate_num"]
@@ -1063,13 +1064,27 @@ class DenseGGNNChemModel(ChemModel):
         return maximum_length
 
     def generate_new_graphs(self, data):
+        # Support both preprocessed tuples and streaming file paths.
+        if isinstance(data, str):
+            print("Preparing generation data from %s" % data)
+            with open(data, 'r') as f:
+                raw_data = json.load(f)
+            data = self.process_raw_graphs(raw_data, False, data)
+
         # bucketed: data organized by bucket
         (bucketed, bucket_sizes, bucket_at_step) = data
         bucket_counters = defaultdict(int)
         # all generated smiles
         generated_all_smiles=[]
+        pkl_data = None
+        pkl_file = self.params.get('pkl_file')
+        if pkl_file:
+            print("Loading pkl metadata from %s" % pkl_file)
+            with open(pkl_file, 'rb') as f:
+                pkl_data = pickle.load(f)
         # counter
         count = 0
+        case_counter = 0
         for step in range(len(bucket_at_step)):
             bucket = bucket_at_step[step] # bucket number
             # data index
@@ -1080,6 +1095,7 @@ class DenseGGNNChemModel(ChemModel):
             for elements in elements_batch:
                 # Allow control over number of additional atoms during generation 
                 maximum_length=self.compensate_node_length(elements, bucket_sizes[bucket])
+                gen_list = []
                 # Generate multiple outputs per mol in valid/test set
                 for _ in range(self.params['number_of_generation_per_valid']):
                     # initial state
@@ -1087,9 +1103,41 @@ class DenseGGNNChemModel(ChemModel):
                                                          self.params['encoding_size']) # [1, v, j]            
                     random_normal_states_in = generate_std_normal(1, maximum_length,\
                                                          self.params['hidden_size']) # [1, v, h]  
-                    self.generate_graph_with_state(random_normal_states, random_normal_states_in,
+                    gen_mol = self.generate_graph_with_state(random_normal_states, random_normal_states_in,
                                        maximum_length, generated_all_smiles, elements, count)
+                    gen_mol = ensure_ringinfo(gen_mol)
+                    if gen_mol is not None:
+                        gen_list.append(gen_mol)
                     count+=1
+
+                raw_data = pkl_data[case_counter] if (pkl_data is not None and case_counter < len(pkl_data)) else {}
+                case_id = raw_data.get('index', case_counter) if isinstance(raw_data, dict) else case_counter
+                try:
+                    case_id = int(case_id)
+                except (TypeError, ValueError):
+                    case_id = case_counter
+
+                def _safe_get(d, k, default=None):
+                    return d.get(k, default) if isinstance(d, dict) else default
+
+                _raw_frag = _safe_get(raw_data, 'frag_smi', elements.get('smiles_in') if isinstance(elements, dict) else None)
+                save_dict = {
+                    'ref_smi': _safe_get(raw_data, 'smiles', elements.get('smiles_out') if isinstance(elements, dict) else None),
+                    'frag_smi': make_eval_frag_smi(_raw_frag),
+                    'linker_smi': _safe_get(raw_data, 'linker_smi', None),
+                    'ref_mol': ensure_ringinfo(_safe_get(raw_data, 'mol', None)),
+                    'gen_mols': gen_list,
+                    'frag_mols': _safe_get(raw_data, 'frag_mol', None),
+                    'linker_mols': _safe_get(raw_data, 'linker_mol', None),
+                    'atom_indices_f1': _safe_get(raw_data, 'atom_indices_f1', None),
+                    'atom_indices_f2': _safe_get(raw_data, 'atom_indices_f2', None),
+                    'fragment_mask': _safe_get(raw_data, 'fragment_mask', None),
+                    'linker_mask': _safe_get(raw_data, 'linker_mask', None),
+                }
+                save_path = os.path.join(self.log_dir, "sampling_%06d.pkl" % case_id)
+                with open(save_path, 'wb') as f_save:
+                    pickle.dump(save_dict, f_save)
+                case_counter += 1
             bucket_counters[bucket] += 1
         # Terminate when loop finished
         print("Generation done")
@@ -1098,7 +1146,7 @@ class DenseGGNNChemModel(ChemModel):
         if self.params['output_name'] != '':
             file_name = self.params['output_name']
         else:
-            file_name = '%s_generated_smiles_%s.smi' % (self.run_id, self.params["dataset"])
+            file_name = os.path.join(self.log_dir, '%s_generated_smiles_%s.smi' % (self.run_id, self.params["dataset"]))
         with open(file_name, 'w') as out_file:
             for line in generated_all_smiles:
                 out_file.write(line + '\n')
