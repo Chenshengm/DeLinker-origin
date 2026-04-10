@@ -1145,9 +1145,11 @@ class DenseGGNNChemModel(ChemModel):
         print("Number of generated SMILES: %d" % len(generated_all_smiles))
         if self.params['output_name'] != '':
             file_name = self.params['output_name']
+            file_path = file_name
         else:
-            file_name = os.path.join(self.log_dir, '%s_generated_smiles_%s.smi' % (self.run_id, self.params["dataset"]))
-        with open(file_name, 'w') as out_file:
+            file_name = '%s_generated_smiles_%s.smi' % (self.run_id, self.params["dataset"])
+            file_path = os.path.join(self.log_dir, file_name)
+        with open(file_path, 'w') as out_file:
             for line in generated_all_smiles:
                 out_file.write(line + '\n')
 
