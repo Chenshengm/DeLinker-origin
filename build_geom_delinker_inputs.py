@@ -50,7 +50,10 @@ def write_stage2(plan, stage1_generated, out_path, abs_dist, angle):
 
     with open(out_path, "w") as f:
         for item, gen in zip(plan, stage1_generated):
-            stage2_frag = "%s.%s" % (gen, item["stage2_remaining_frag"])
+            remaining = item.get("stage2_remaining_frag", item.get("third_frag_with_dummy"))
+            if remaining is None:
+                raise ValueError("plan item missing remaining fragment field")
+            stage2_frag = "%s.%s" % (gen, remaining)
             f.write("%s %s %s\n" % (stage2_frag, abs_dist, angle))
     print("Wrote stage-2 input: %s (%d lines)" % (out_path, len(plan)))
 
