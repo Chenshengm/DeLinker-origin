@@ -19,12 +19,14 @@ from rdkit import RDLogger
 from data.frag_utils import compute_distance_and_angle
 
 RDLogger.DisableLog("rdApp.error")
+ENABLE_SANITIZE = True
+ENABLE_KEKULIZE = True
 
 
 def load_sdf(path):
     if not path:
         return {}
-    sup = Chem.SDMolSupplier(path)
+    sup = Chem.SDMolSupplier(path, sanitize=ENABLE_SANITIZE, removeHs=False)
     out = []
     for idx, mol in enumerate(sup):
         if mol is None:
@@ -55,7 +57,7 @@ def find_dummy_idx_by_mapnum(mol, map_num):
 
 
 def mol_from_any(text):
-    mol = Chem.MolFromSmiles(text)
+    mol = Chem.MolFromSmiles(text, sanitize=ENABLE_SANITIZE)
     if mol is not None:
         return mol
     mol = Chem.MolFromSmiles(text, sanitize=False)
@@ -66,7 +68,7 @@ def mol_from_any(text):
         return None
     try:
         smi = Chem.MolToSmiles(q, isomericSmiles=True)
-        return Chem.MolFromSmiles(smi, sanitize=False)
+        return Chem.MolFromSmiles(smi, sanitize=ENABLE_SANITIZE)
     except Exception:
         return None
 
@@ -99,10 +101,11 @@ def merge_on_mapnum(base_smi, frag_smi, map_num):
         rw.RemoveAtom(idx)
 
     mol = rw.GetMol()
-    try:
-        Chem.SanitizeMol(mol)
-    except Exception:
-        pass
+    if ENABLE_SANITIZE:
+        try:
+            Chem.SanitizeMol(mol)
+        except Exception:
+            pass
     return Chem.MolToSmiles(mol, isomericSmiles=True, kekuleSmiles=False)
 
 
@@ -128,12 +131,13 @@ def normalize_for_delinker(smiles):
     mol = mol_from_any(smiles)
     if mol is None:
         return None
+    if ENABLE_KEKULIZE:
+        try:
+            Chem.Kekulize(mol, clearAromaticFlags=True)
+        except Exception:
+            pass
     try:
-        Chem.Kekulize(mol, clearAromaticFlags=True)
-    except Exception:
-        pass
-    try:
-        return Chem.MolToSmiles(mol, isomericSmiles=True, kekuleSmiles=True)
+        return Chem.MolToSmiles(mol, isomericSmiles=True, kekuleSmiles=ENABLE_KEKULIZE)
     except Exception:
         return Chem.MolToSmiles(mol, isomericSmiles=True)
 
@@ -163,11 +167,12 @@ def add_dummy_to_fragment(fragment_smiles, full_mol, anchor_idx, label):
     d_idx = rw.AddAtom(dummy)
     rw.AddBond(local_idx, d_idx, Chem.BondType.SINGLE)
     mol = rw.GetMol()
-    try:
-        Chem.SanitizeMol(mol)
-    except Exception:
-        pass
-    return Chem.MolToSmiles(mol, isomericSmiles=True, kekuleSmiles=True)
+    if ENABLE_SANITIZE:
+        try:
+            Chem.SanitizeMol(mol)
+        except Exception:
+            pass
+    return Chem.MolToSmiles(mol, isomericSmiles=True, kekuleSmiles=ENABLE_KEKULIZE)
 
 
 def add_dummy_to_linker(linker_smiles, full_mol, anchors, label_map):
@@ -192,11 +197,12 @@ def add_dummy_to_linker(linker_smiles, full_mol, anchors, label_map):
         d_idx = rw.AddAtom(dummy)
         rw.AddBond(local_idx, d_idx, Chem.BondType.SINGLE)
     mol = rw.GetMol()
-    try:
-        Chem.SanitizeMol(mol)
-    except Exception:
-        pass
-    return Chem.MolToSmiles(mol, isomericSmiles=True, kekuleSmiles=True)
+    if ENABLE_SANITIZE:
+        try:
+            Chem.SanitizeMol(mol)
+        except Exception:
+            pass
+    return Chem.MolToSmiles(mol, isomericSmiles=True, kekuleSmiles=ENABLE_KEKULIZE)
 
 
 def build_dummy_strings_from_nondummy(row, molecule_col, fragments_nondummy_col, linker_nondummy_col, anchors_col):
@@ -247,10 +253,17 @@ def main():
     parser.add_argument("--linker_col", default="linker_with_dummy", help="linker smiles column (dummy-labeled)")
     parser.add_argument("--build_dummy_from_nondummy", action="store_true",
                         help="rebuild dummy-labeled fragments/linker from non-dummy columns + anchors")
+    parser.add_argument("--disable_sanitize", action="store_true",
+                        help="disable RDKit sanitize in parsing/SDMolSupplier")
+    parser.add_argument("--disable_kekulize", action="store_true",
+                        help="disable kekulize during output normalization")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--default_abs_dist", default="0.0")
     parser.add_argument("--default_angle", default="0.0")
     args = parser.parse_args()
+    global ENABLE_SANITIZE, ENABLE_KEKULIZE
+    ENABLE_SANITIZE = not args.disable_sanitize
+    ENABLE_KEKULIZE = not args.disable_kekulize
 
     rng = random.Random(args.seed)
     mol_sdf = load_sdf(args.mol_sdf)
