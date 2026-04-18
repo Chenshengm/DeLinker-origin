@@ -260,6 +260,8 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--default_abs_dist", default="0.0")
     parser.add_argument("--default_angle", default="0.0")
+    parser.add_argument("--debug_angle", action="store_true",
+                        help="print detailed failure reasons from compute_distance_and_angle")
     args = parser.parse_args()
     global ENABLE_SANITIZE, ENABLE_KEKULIZE
     ENABLE_SANITIZE = not args.disable_sanitize
@@ -322,7 +324,7 @@ def main():
                 mol_key = Chem.MolToSmiles(Chem.MolFromSmiles(mol_norm), isomericSmiles=True)
                 conf = mol_lookup.get(mol_key)
             if conf is not None:
-                d, a = compute_distance_and_angle(conf, linker_norm, frags_norm)
+                d, a = compute_distance_and_angle(conf, linker_norm, frags_norm, debug=args.debug_angle)
                 if d is not None and a is not None:
                     abs_dist = str(float(d))
                     angle = str(float(a))
