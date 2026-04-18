@@ -13,8 +13,12 @@ import argparse
 import csv
 import json
 import random
+import re
 from rdkit import Chem
+from rdkit import RDLogger
 from data.frag_utils import compute_distance_and_angle
+
+RDLogger.DisableLog("rdApp.error")
 
 
 def load_sdf(path):
@@ -37,9 +41,26 @@ def find_dummy_idx_by_mapnum(mol, map_num):
     return None
 
 
+def mol_from_any(text):
+    mol = Chem.MolFromSmiles(text)
+    if mol is not None:
+        return mol
+    mol = Chem.MolFromSmiles(text, sanitize=False)
+    if mol is not None:
+        return mol
+    q = Chem.MolFromSmarts(text)
+    if q is None:
+        return None
+    try:
+        smi = Chem.MolToSmiles(q, isomericSmiles=True)
+        return Chem.MolFromSmiles(smi, sanitize=False)
+    except Exception:
+        return None
+
+
 def merge_on_mapnum(base_smi, frag_smi, map_num):
-    base = Chem.MolFromSmiles(base_smi)
-    frag = Chem.MolFromSmiles(frag_smi)
+    base = mol_from_any(base_smi)
+    frag = mol_from_any(frag_smi)
     if base is None or frag is None:
         return None
 
@@ -65,29 +86,29 @@ def merge_on_mapnum(base_smi, frag_smi, map_num):
         rw.RemoveAtom(idx)
 
     mol = rw.GetMol()
-    Chem.SanitizeMol(mol)
-    return Chem.MolToSmiles(mol, isomericSmiles=True)
+    try:
+        Chem.SanitizeMol(mol)
+    except Exception:
+        pass
+    return Chem.MolToSmiles(mol, isomericSmiles=True, kekuleSmiles=False)
 
 
 def split_frags_by_mapnum(frags_smi):
     frags = frags_smi.split(".")
     mapping = {}
     for frag in frags:
-        m = Chem.MolFromSmiles(frag)
-        if m is None:
-            continue
-        labels = [a.GetAtomMapNum() for a in m.GetAtoms() if a.GetAtomicNum() == 0]
+        labels = re.findall(r"\[\*:([0-9]+)\]", frag)
         if len(labels) != 1:
             continue
-        mapping[labels[0]] = frag
+        mapping[int(labels[0])] = frag
     return mapping
 
 
 def heavy_atom_count(smiles):
-    mol = Chem.MolFromSmiles(smiles)
+    mol = mol_from_any(smiles)
     if mol is None:
         return 0
-    return mol.GetNumHeavyAtoms()
+    return sum(1 for a in mol.GetAtoms() if a.GetAtomicNum() > 1)
 
 
 def main():
@@ -113,6 +134,8 @@ def main():
     frag_sdf = load_sdf(args.frag_sdf)
     plan = []
     rows_out = []
+    skip_bad_dummy = 0
+    skip_merge_fail = 0
 
     with open(args.input_csv, "r") as f:
         reader = csv.DictReader(f)
@@ -122,6 +145,7 @@ def main():
             linker = row[args.linker_col]
             frags_map = split_frags_by_mapnum(row[args.fragments_col])
             if set(frags_map.keys()) != {1, 2, 3}:
+                skip_bad_dummy += 1
                 continue
 
             pair = sorted(rng.sample([1, 2, 3], 2))
@@ -130,6 +154,7 @@ def main():
             pair_frags = frags_map[pair[0]] + "." + frags_map[pair[1]]
             pair_linker = merge_on_mapnum(linker, frags_map[third], third)
             if pair_linker is None:
+                skip_merge_fail += 1
                 continue
 
             abs_dist = args.default_abs_dist
@@ -169,6 +194,8 @@ def main():
         print("Loaded linker_sdf entries: %d" % len(linker_sdf))
     if args.frag_sdf:
         print("Loaded frag_sdf entries: %d" % len(frag_sdf))
+    print("Skipped rows (dummy parse): %d" % skip_bad_dummy)
+    print("Skipped rows (merge fail): %d" % skip_merge_fail)
     print("Wrote %d rows -> %s" % (len(rows_out), args.output_txt))
     print("Wrote plan -> %s" % args.output_plan)
 
