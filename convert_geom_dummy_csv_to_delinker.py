@@ -138,6 +138,98 @@ def normalize_for_delinker(smiles):
         return Chem.MolToSmiles(mol, isomericSmiles=True)
 
 
+def parse_anchor_indices(text):
+    if not text:
+        return []
+    return [int(x) for x in text.split("-") if x != ""]
+
+
+def add_dummy_to_fragment(fragment_smiles, full_mol, anchor_idx, label):
+    frag = mol_from_any(fragment_smiles)
+    if frag is None:
+        return None
+    matches = list(full_mol.GetSubstructMatches(frag, uniquify=False))
+    chosen = None
+    for m in matches:
+        if anchor_idx in m:
+            chosen = m
+            break
+    if chosen is None:
+        return None
+    local_idx = list(chosen).index(anchor_idx)
+    rw = Chem.RWMol(frag)
+    dummy = Chem.Atom(0)
+    dummy.SetAtomMapNum(label)
+    d_idx = rw.AddAtom(dummy)
+    rw.AddBond(local_idx, d_idx, Chem.BondType.SINGLE)
+    mol = rw.GetMol()
+    try:
+        Chem.SanitizeMol(mol)
+    except Exception:
+        pass
+    return Chem.MolToSmiles(mol, isomericSmiles=True, kekuleSmiles=True)
+
+
+def add_dummy_to_linker(linker_smiles, full_mol, anchors, label_map):
+    linker = mol_from_any(linker_smiles)
+    if linker is None:
+        return None
+    matches = list(full_mol.GetSubstructMatches(linker, uniquify=False))
+    if not matches:
+        return None
+    best = max(matches, key=lambda m: sum(1 for a in anchors if a in m))
+    rw = Chem.RWMol(linker)
+    # add in descending local idx order to keep indices stable
+    add_ops = []
+    for a in anchors:
+        if a not in best:
+            continue
+        local_idx = list(best).index(a)
+        add_ops.append((local_idx, label_map[a]))
+    for local_idx, label in sorted(add_ops, key=lambda x: x[0], reverse=True):
+        dummy = Chem.Atom(0)
+        dummy.SetAtomMapNum(label)
+        d_idx = rw.AddAtom(dummy)
+        rw.AddBond(local_idx, d_idx, Chem.BondType.SINGLE)
+    mol = rw.GetMol()
+    try:
+        Chem.SanitizeMol(mol)
+    except Exception:
+        pass
+    return Chem.MolToSmiles(mol, isomericSmiles=True, kekuleSmiles=True)
+
+
+def build_dummy_strings_from_nondummy(row, molecule_col, fragments_nondummy_col, linker_nondummy_col, anchors_col):
+    full_mol = mol_from_any(row[molecule_col])
+    if full_mol is None:
+        return None, None
+    anchors = parse_anchor_indices(row.get(anchors_col, ""))
+    if len(anchors) < 2:
+        return None, None
+    # label by anchor order: first anchor->1, second->2, ...
+    label_map = {a: idx + 1 for idx, a in enumerate(anchors)}
+
+    frag_list = row[fragments_nondummy_col].split(".")
+    remaining_anchors = set(anchors)
+    frag_with_dummy = []
+    for frag in frag_list:
+        chosen_anchor = None
+        for a in list(remaining_anchors):
+            trial = add_dummy_to_fragment(frag, full_mol, a, label_map[a])
+            if trial is not None:
+                chosen_anchor = a
+                frag_with_dummy.append(trial)
+                break
+        if chosen_anchor is None:
+            return None, None
+        remaining_anchors.remove(chosen_anchor)
+
+    linker_with_dummy = add_dummy_to_linker(row[linker_nondummy_col], full_mol, anchors, label_map)
+    if linker_with_dummy is None:
+        return None, None
+    return ".".join(frag_with_dummy), linker_with_dummy
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input_csv", required=True)
@@ -148,8 +240,13 @@ def main():
     parser.add_argument("--frag_sdf", default="", help="optional fragment SDF (order check only)")
     parser.add_argument("--uuid_col", default="uuid", help="uuid column name in csv")
     parser.add_argument("--molecule_col", default="molecule", help="full molecule smiles column")
+    parser.add_argument("--fragments_nondummy_col", default="fragments", help="fragment smiles column (without dummy)")
+    parser.add_argument("--linker_nondummy_col", default="linker", help="linker smiles column (without dummy)")
+    parser.add_argument("--anchors_col", default="anchors", help="anchor indices column from full molecule")
     parser.add_argument("--fragments_col", default="fragments_with_dummy", help="fragment smiles column (dummy-labeled)")
     parser.add_argument("--linker_col", default="linker_with_dummy", help="linker smiles column (dummy-labeled)")
+    parser.add_argument("--build_dummy_from_nondummy", action="store_true",
+                        help="rebuild dummy-labeled fragments/linker from non-dummy columns + anchors")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--default_abs_dist", default="0.0")
     parser.add_argument("--default_angle", default="0.0")
@@ -166,14 +263,25 @@ def main():
     skip_merge_fail = 0
     skip_normalize_fail = 0
     dist_angle_fail = 0
+    dummy_rebuild_fail = 0
 
     with open(args.input_csv, "r") as f:
         reader = csv.DictReader(f)
         for row_idx, row in enumerate(reader):
             case_id = row[args.uuid_col]
             mol = row[args.molecule_col]
-            linker = row[args.linker_col]
-            frags_map = split_frags_by_mapnum(row[args.fragments_col])
+            if args.build_dummy_from_nondummy:
+                frags_dummy, linker_dummy = build_dummy_strings_from_nondummy(
+                    row, args.molecule_col, args.fragments_nondummy_col, args.linker_nondummy_col, args.anchors_col
+                )
+                if frags_dummy is None or linker_dummy is None:
+                    dummy_rebuild_fail += 1
+                    continue
+                linker = linker_dummy
+                frags_map = split_frags_by_mapnum(frags_dummy)
+            else:
+                linker = row[args.linker_col]
+                frags_map = split_frags_by_mapnum(row[args.fragments_col])
             if set(frags_map.keys()) != {1, 2, 3}:
                 skip_bad_dummy += 1
                 continue
@@ -240,6 +348,8 @@ def main():
     print("Skipped rows (merge fail): %d" % skip_merge_fail)
     print("Skipped rows (normalize fail): %d" % skip_normalize_fail)
     print("Rows with dist/angle fallback defaults: %d" % dist_angle_fail)
+    if args.build_dummy_from_nondummy:
+        print("Skipped rows (dummy rebuild fail): %d" % dummy_rebuild_fail)
     print("Wrote %d rows -> %s" % (len(rows_out), args.output_txt))
     print("Wrote plan -> %s" % args.output_plan)
 
