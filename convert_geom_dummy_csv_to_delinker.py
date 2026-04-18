@@ -34,6 +34,19 @@ def load_sdf(path):
     return out
 
 
+def build_mol_lookup_by_smiles(mols):
+    lookup = {}
+    for mol in mols:
+        if mol is None:
+            continue
+        try:
+            key = Chem.MolToSmiles(Chem.MolFromSmiles(Chem.MolToSmiles(mol)), isomericSmiles=True)
+            lookup[key] = mol
+        except Exception:
+            continue
+    return lookup
+
+
 def find_dummy_idx_by_mapnum(mol, map_num):
     for atom in mol.GetAtoms():
         if atom.GetAtomicNum() == 0 and atom.GetAtomMapNum() == map_num:
@@ -111,6 +124,20 @@ def heavy_atom_count(smiles):
     return sum(1 for a in mol.GetAtoms() if a.GetAtomicNum() > 1)
 
 
+def normalize_for_delinker(smiles):
+    mol = mol_from_any(smiles)
+    if mol is None:
+        return None
+    try:
+        Chem.Kekulize(mol, clearAromaticFlags=True)
+    except Exception:
+        pass
+    try:
+        return Chem.MolToSmiles(mol, isomericSmiles=True, kekuleSmiles=True)
+    except Exception:
+        return Chem.MolToSmiles(mol, isomericSmiles=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input_csv", required=True)
@@ -130,12 +157,15 @@ def main():
 
     rng = random.Random(args.seed)
     mol_sdf = load_sdf(args.mol_sdf)
+    mol_lookup = build_mol_lookup_by_smiles(mol_sdf)
     linker_sdf = load_sdf(args.linker_sdf)
     frag_sdf = load_sdf(args.frag_sdf)
     plan = []
     rows_out = []
     skip_bad_dummy = 0
     skip_merge_fail = 0
+    skip_normalize_fail = 0
+    dist_angle_fail = 0
 
     with open(args.input_csv, "r") as f:
         reader = csv.DictReader(f)
@@ -157,16 +187,28 @@ def main():
                 skip_merge_fail += 1
                 continue
 
+            mol_norm = normalize_for_delinker(mol)
+            linker_norm = normalize_for_delinker(pair_linker)
+            frags_norm = normalize_for_delinker(pair_frags)
+            if None in (mol_norm, linker_norm, frags_norm):
+                skip_normalize_fail += 1
+                continue
+
             abs_dist = args.default_abs_dist
             angle = args.default_angle
             conf = mol_sdf[row_idx] if row_idx < len(mol_sdf) else None
+            if conf is None and mol_norm is not None:
+                mol_key = Chem.MolToSmiles(Chem.MolFromSmiles(mol_norm), isomericSmiles=True)
+                conf = mol_lookup.get(mol_key)
             if conf is not None:
-                d, a = compute_distance_and_angle(conf, pair_linker, pair_frags)
+                d, a = compute_distance_and_angle(conf, linker_norm, frags_norm)
                 if d is not None and a is not None:
                     abs_dist = str(float(d))
                     angle = str(float(a))
+                else:
+                    dist_angle_fail += 1
 
-            rows_out.append((mol, pair_linker, pair_frags, abs_dist, angle))
+            rows_out.append((mol_norm, linker_norm, frags_norm, abs_dist, angle))
             original_linker_heavy = heavy_atom_count(linker)
             stage1_target = max(1, original_linker_heavy // 2)
             stage2_target = max(1, original_linker_heavy - stage1_target)
@@ -196,6 +238,8 @@ def main():
         print("Loaded frag_sdf entries: %d" % len(frag_sdf))
     print("Skipped rows (dummy parse): %d" % skip_bad_dummy)
     print("Skipped rows (merge fail): %d" % skip_merge_fail)
+    print("Skipped rows (normalize fail): %d" % skip_normalize_fail)
+    print("Rows with dist/angle fallback defaults: %d" % dist_angle_fail)
     print("Wrote %d rows -> %s" % (len(rows_out), args.output_txt))
     print("Wrote plan -> %s" % args.output_plan)
 
