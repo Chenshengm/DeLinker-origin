@@ -334,11 +334,22 @@ def unit_vector(vector):
     return vector / np.linalg.norm(vector)
 
 
-def compute_distance_and_angle(mol, smi_linker, smi_frags):
+def compute_distance_and_angle(mol, smi_linker, smi_frags, debug=False):
+    def _dbg(msg):
+        if debug:
+            print("[compute_distance_and_angle] %s" % msg)
     try:
-        frags = [Chem.MolFromSmiles(frag) for frag in smi_frags.split(".")]
         frags = Chem.MolFromSmiles(smi_frags)
         linker = Chem.MolFromSmiles(smi_linker)
+        if mol is None:
+            _dbg("input mol is None")
+            return None, None
+        if frags is None:
+            _dbg("failed to parse fragments smiles: %s" % smi_frags)
+            return None, None
+        if linker is None:
+            _dbg("failed to parse linker smiles: %s" % smi_linker)
+            return None, None
         # Include dummy in query
         du = Chem.MolFromSmiles('*')
         qp = Chem.AdjustQueryParameters()
@@ -352,15 +363,27 @@ def compute_distance_and_angle(mol, smi_linker, smi_frags):
         frags_matches = list(mol.GetSubstructMatches(qfrag, uniquify=False))
         qlinker = Chem.AdjustQueryProperties(linker,qp)
         linker_matches = list(mol.GetSubstructMatches(qlinker, uniquify=False))
+        if len(frags_matches) == 0:
+            _dbg("no fragment match in mol; frags=%s" % smi_frags)
+            return None, None
+        if len(linker_matches) == 0:
+            _dbg("no linker match in mol; linker=%s" % smi_linker)
+            return None, None
             
         # Loop over matches
+        found_covering_match = False
         for frag_match, linker_match in product(frags_matches, linker_matches):
             # Check if match
             f_match = [idx for num, idx in enumerate(frag_match) if frags.GetAtomWithIdx(num).GetAtomicNum() != 0]
             l_match = [idx for num, idx in enumerate(linker_match) if linker.GetAtomWithIdx(num).GetAtomicNum() != 0 and idx not in f_match]
             if len(set(list(f_match)+list(l_match))) == mol.GetNumHeavyAtoms():
             #if len(set(list(frag_match)+list(linker_match))) == mol.GetNumHeavyAtoms():
+                found_covering_match = True
                 break
+        if not found_covering_match:
+            _dbg("no covering fragment+linker match found; frags_matches=%d linker_matches=%d heavy_atoms=%d"
+                 % (len(frags_matches), len(linker_matches), mol.GetNumHeavyAtoms()))
+            return None, None
         # Add frag indices
         sub_idx += frag_match
         # Add linker indices to end
@@ -399,8 +422,15 @@ def compute_distance_and_angle(mol, smi_linker, smi_frags):
                 for nei in atom.GetNeighbors():
                     exit_vectors.append(nei.GetIdx())
                 linker_atom_idx.append(atom.GetIdx())
+        if len(exit_vectors) != 2 or len(linker_atom_idx) != 2:
+            _dbg("unexpected exit/linker atom count: exit_vectors=%d linker_atom_idx=%d"
+                 % (len(exit_vectors), len(linker_atom_idx)))
+            return None, None
                     
         # Get coords
+        if aligned_mols[0].GetNumConformers() == 0:
+            _dbg("aligned mol has no conformer")
+            return None, None
         conf = aligned_mols[0].GetConformer()
         exit_coords = []
         for exit in exit_vectors:
@@ -416,6 +446,9 @@ def compute_distance_and_angle(mol, smi_linker, smi_frags):
                     
         # Get linker length
         linker = Chem.MolFromSmiles(smi_linker)
+        if linker is None:
+            _dbg("failed to reparse linker for length: %s" % smi_linker)
+            return None, None
         linker_length = linker.GetNumHeavyAtoms()
 
         # Get distance
@@ -424,8 +457,16 @@ def compute_distance_and_angle(mol, smi_linker, smi_frags):
         # Record results
         return distance, angle
     
-    except:
-        print(Chem.MolToSmiles(mol), smi_linker, smi_frags)
+    except Exception as e:
+        if debug:
+            print("[compute_distance_and_angle] exception: %s" % str(e))
+            try:
+                print("[compute_distance_and_angle] mol=%s linker=%s frags=%s"
+                      % (Chem.MolToSmiles(mol), smi_linker, smi_frags))
+            except Exception:
+                print("[compute_distance_and_angle] linker=%s frags=%s" % (smi_linker, smi_frags))
+        else:
+            print(Chem.MolToSmiles(mol), smi_linker, smi_frags)
         return None, None
     
 

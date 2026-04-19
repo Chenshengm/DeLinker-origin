@@ -45,6 +45,8 @@ class ChemModel(object):
         
         self.run_id = "_".join([time.strftime("%Y-%m-%d-%H-%M-%S"), str(os.getpid())])
         log_dir = args.get('--log_dir') or '.'
+        os.makedirs(log_dir, exist_ok=True)
+        self.log_dir = log_dir
         self.log_file = os.path.join(log_dir, "%s_log_%s.json" % (self.run_id, dataset))
         self.best_model_file = os.path.join(log_dir, "%s_model.pickle" % self.run_id)
 
@@ -299,7 +301,8 @@ class ChemModel(object):
                     log_to_save.append(log_entry)
                     with open(self.log_file, 'w') as f:
                         json.dump(log_to_save, f, indent=4)
-                    self.save_model(self.run_id + "_" + str(epoch)+("_%s.pickle" % (self.params["dataset"])))
+                    checkpoint_name = self.run_id + "_" + str(epoch) + ("_%s.pickle" % (self.params["dataset"]))
+                    self.save_model(os.path.join(self.log_dir, checkpoint_name))
                 # Run epoches for graph generation
                 if epoch >= self.params['epoch_to_generate']:
                     self.generate_new_graphs(self.valid_data)
