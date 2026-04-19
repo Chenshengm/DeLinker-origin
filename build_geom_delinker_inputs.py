@@ -44,18 +44,24 @@ def load_stage1_generated(path):
     return generated
 
 
-def write_stage2(plan, stage1_generated, out_path, abs_dist, angle):
-    if len(stage1_generated) < len(plan):
-        raise ValueError("stage1 generated count (%d) < plan count (%d)" % (len(stage1_generated), len(plan)))
+def write_stage2(plan, stage1_generated, out_path, abs_dist, angle, stage1_per_input=1):
+    required = len(plan) * stage1_per_input
+    if len(stage1_generated) < required:
+        raise ValueError("stage1 generated count (%d) < required (%d)" % (len(stage1_generated), required))
 
     with open(out_path, "w") as f:
-        for item, gen in zip(plan, stage1_generated):
+        line_count = 0
+        for idx, item in enumerate(plan):
             remaining = item.get("stage2_remaining_frag", item.get("third_frag_with_dummy"))
             if remaining is None:
                 raise ValueError("plan item missing remaining fragment field")
-            stage2_frag = "%s.%s" % (gen, remaining)
-            f.write("%s %s %s\n" % (stage2_frag, abs_dist, angle))
-    print("Wrote stage-2 input: %s (%d lines)" % (out_path, len(plan)))
+            start = idx * stage1_per_input
+            end = start + stage1_per_input
+            for gen in stage1_generated[start:end]:
+                stage2_frag = "%s.%s" % (gen, remaining)
+                f.write("%s %s %s\n" % (stage2_frag, abs_dist, angle))
+                line_count += 1
+    print("Wrote stage-2 input: %s (%d lines)" % (out_path, line_count))
 
 
 def main():
@@ -74,6 +80,8 @@ def main():
     p2.add_argument("--output", required=True)
     p2.add_argument("--abs_dist", default="0.0")
     p2.add_argument("--angle", default="0.0")
+    p2.add_argument("--stage1_per_input", type=int, default=1,
+                    help="how many stage-1 generated molecules correspond to each plan item")
 
     args = parser.parse_args()
     plan = load_plan(args.plan)
@@ -82,7 +90,7 @@ def main():
         write_stage1(plan, args.output, args.abs_dist, args.angle)
     elif args.cmd == "stage2":
         stage1_generated = load_stage1_generated(args.stage1_generated_smi)
-        write_stage2(plan, stage1_generated, args.output, args.abs_dist, args.angle)
+        write_stage2(plan, stage1_generated, args.output, args.abs_dist, args.angle, args.stage1_per_input)
 
 
 if __name__ == "__main__":
