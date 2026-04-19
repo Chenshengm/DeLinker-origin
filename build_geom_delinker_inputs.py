@@ -66,7 +66,7 @@ def write_stage2(plan, stage1_generated, out_path, abs_dist, angle, stage1_per_i
 
 def main():
     parser = argparse.ArgumentParser()
-    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub = parser.add_subparsers(dest="cmd")
 
     p1 = sub.add_parser("stage1")
     p1.add_argument("--plan", required=True)
@@ -84,6 +84,9 @@ def main():
                     help="how many stage-1 generated molecules correspond to each plan item")
 
     args = parser.parse_args()
+    if args.cmd is None:
+        parser.print_help()
+        parser.exit(2, "\nerror: please specify a subcommand: stage1 or stage2\n")
     plan = load_plan(args.plan)
 
     if args.cmd == "stage1":
