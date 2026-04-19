@@ -12,10 +12,12 @@ Stage-2 output format (for `data/prepare_data.py --test_mode`):
 
 import argparse
 import json
+
 try:
-    from rdkit import Chem
+    from tqdm import tqdm
 except Exception:
-    Chem = None
+    def tqdm(iterable, **kwargs):
+        return iterable
 
 
 def load_plan(path):
@@ -24,18 +26,8 @@ def load_plan(path):
 
 
 def normalize_stage1_key(key):
-    parts = key.split(".")
-    norm_parts = []
-    for p in parts:
-        p = p.strip()
-        if p == "":
-            continue
-        if Chem is not None:
-            mol = Chem.MolFromSmiles(p)
-            if mol is not None:
-                p = Chem.MolToSmiles(mol, isomericSmiles=True)
-        norm_parts.append(p)
-    return ".".join(sorted(norm_parts))
+    # Exact string matching only (no canonicalization).
+    return key.strip()
 
 
 def write_stage1(plan, out_path, abs_dist, angle):
@@ -51,7 +43,7 @@ def parse_stage1_gen_line(line):
     #   <smiles_in> <smiles_out> <generated_smiles>
     if len(toks) < 3:
         return None
-    return normalize_stage1_key(toks[0]), toks[2]
+    return toks[0].strip(), toks[2]
 
 
 def load_stage1_generated(path):
@@ -64,8 +56,8 @@ def load_stage1_generated(path):
     return generated
 
 
-def write_stage2(plan, stage1_generated, out_path, abs_dist, angle, stage1_per_input=1, allow_missing_stage1=False):
-    # group generated molecules by stage1 input key
+def write_stage2(plan, stage1_generated, out_path, abs_dist, angle, stage1_per_input=1, allow_missing_stage1=False, debug_missing=False):
+    # group generated molecules by stage1 input key (exact string match)
     generated_by_key = {}
     for stage1_key, gen in stage1_generated:
         generated_by_key.setdefault(stage1_key, []).append(gen)
@@ -73,26 +65,34 @@ def write_stage2(plan, stage1_generated, out_path, abs_dist, angle, stage1_per_i
     with open(out_path, "w") as f:
         line_count = 0
         skipped_cases = 0
-        for idx, item in enumerate(plan):
+        matched_cases = 0
+        missing_examples = []
+        for idx, item in enumerate(tqdm(plan, desc="Building stage2", unit="case")):
             remaining = item.get("stage2_remaining_frag", item.get("third_frag_with_dummy"))
             if remaining is None:
                 raise ValueError("plan item missing remaining fragment field")
-            stage1_key = item.get("stage1_frag_smi", item.get("pair_frags"))
-            stage1_key = normalize_stage1_key(stage1_key)
+            stage1_key = normalize_stage1_key(item.get("stage1_frag_smi", item.get("pair_frags")))
             pool = generated_by_key.get(stage1_key, [])
             if len(pool) < stage1_per_input:
                 if allow_missing_stage1:
                     skipped_cases += 1
+                    if len(missing_examples) < 20:
+                        missing_examples.append((item.get("case_id", idx), stage1_key, len(pool)))
                     continue
                 raise ValueError("stage1 generated count for key '%s' is %d < required %d"
                                  % (stage1_key, len(pool), stage1_per_input))
+            matched_cases += 1
             for gen in pool[:stage1_per_input]:
                 stage2_frag = "%s.%s" % (gen, remaining)
                 f.write("%s %s %s\n" % (stage2_frag, abs_dist, angle))
                 line_count += 1
     print("Wrote stage-2 input: %s (%d lines)" % (out_path, line_count))
-    if skipped_cases > 0:
-        print("Skipped stage-2 cases due to missing stage1 generations: %d" % skipped_cases)
+    print("Matched stage-2 cases: %d" % matched_cases)
+    print("Unmatched stage-2 cases: %d" % skipped_cases)
+    if debug_missing and missing_examples:
+        print("Examples of unmatched keys (case_id, key, generated_count):")
+        for case_id, key, cnt in missing_examples:
+            print("  - %s | %s | %d" % (case_id, key, cnt))
 
 
 def main():
@@ -115,6 +115,8 @@ def main():
                     help="how many stage-1 generated molecules correspond to each plan item")
     p2.add_argument("--allow_missing_stage1", action="store_true",
                     help="skip plan items that do not have enough stage1 generated molecules")
+    p2.add_argument("--debug_missing", action="store_true",
+                    help="print sample unmatched key diagnostics when stage1 entries are absent")
 
     args = parser.parse_args()
     if args.cmd is None:
@@ -127,7 +129,7 @@ def main():
     elif args.cmd == "stage2":
         stage1_generated = load_stage1_generated(args.stage1_generated_smi)
         write_stage2(plan, stage1_generated, args.output, args.abs_dist, args.angle,
-                     args.stage1_per_input, args.allow_missing_stage1)
+                     args.stage1_per_input, args.allow_missing_stage1, args.debug_missing)
 
 
 if __name__ == "__main__":
