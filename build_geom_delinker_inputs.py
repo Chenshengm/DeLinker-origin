@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 """
 Build DeLinker-compatible test inputs from a GEOM two-stage plan.
+For stage2, use: `python build_geom_delinker_inputs.py stage2 ...`.
 
 Stage-1 output format (for `data/prepare_data.py --test_mode`):
     <frag_a.frag_b> <abs_dist> <angle>
